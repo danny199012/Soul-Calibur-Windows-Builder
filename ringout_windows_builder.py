@@ -419,7 +419,9 @@ def ensure_msvc(tools: ToolSet, dl_dir: Path, skip: bool):
             tools.vs_generator = f"Visual Studio {major}"
         tools.msvc_found = True
 
-    # 1) Prefer VS 2022 (version 17.x) — the version the original CI used
+    # 1) Prefer VS 2022 (version 17.x) — the version the original CI used.
+    #    ModernGekko requires MSVC 19.32+ (VS 2022 17.2.3+), and the vendored
+    #    Dolphin code has implicit conversions that VS 2026+ rejects.
     vs_path, major = _vswhere_find("[17.0,18.0)")
     if vs_path:
         _set_generator(major)
@@ -427,25 +429,21 @@ def ensure_msvc(tools: ToolSet, dl_dir: Path, skip: bool):
         ok(f"Using generator: {tools.vs_generator}")
         return
 
-    # 2) Check for VS 2019 (version 16.x) as a fallback
-    vs_path, major = _vswhere_find("[16.0,17.0)")
-    if vs_path:
-        _set_generator(major)
-        ok(f"Visual Studio 2019 found: {vs_path}")
-        ok(f"Using generator: {tools.vs_generator}")
-        return
+    # 2) VS 2019 (version 16) is too old — ModernGekko requires MSVC 19.32+
+    #    and VS 2019 ships MSVC 19.29. Skip it and fall through to download.
 
-    # 3) Check for any other VS version (e.g. VS 2026 Preview = version 18)
-    vs_path, major = _vswhere_find("[15.0,)")
-    if vs_path:
-        _set_generator(major)
-        warn(f"Only Visual Studio {major} was found (not VS 2022).")
-        warn(f"The vendored Dolphin code may have compilation errors with MSVC")
-        warn(f"versions newer than VS 2022 (C2440 string_view->string).")
-        warn(f"Install VS 2022 Build Tools for a guaranteed-compatible build:")
-        warn(f"  https://visualstudio.microsoft.com/downloads/")
-        ok(f"Using generator: {tools.vs_generator} (best available)")
-        return
+    # 3) Check for VS 2026+ (version 18+) — usable but may have C2440 errors.
+    #    Only use this if the user explicitly passed --skip-deps.
+    if skip:
+        vs_path, major = _vswhere_find("[18.0,)")
+        if vs_path:
+            _set_generator(major)
+            warn(f"Only Visual Studio {major} was found (not VS 2022).")
+            warn(f"VS 2019 is too old (MSVC 19.29 < 19.32 required).")
+            warn(f"VS {major} may have C2440 string_view->string errors.")
+            warn(f"Installing VS 2022 Build Tools is recommended.")
+            ok(f"Using generator: {tools.vs_generator} (best available)")
+            return
 
     # 4) Check for cl.exe on PATH (Developer Command Prompt)
     cl = which("cl")
