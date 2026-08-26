@@ -1,0 +1,46 @@
+name: Build RingOut Runtime (Windows)
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/build-runtime.yml']
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: jackpoison-prog/RingOut
+          ref: main
+      - name: Configure
+        run: >
+          cmake -S ModernGekko -B build -G "Visual Studio 17 2022" -A x64
+          -DENABLE_QT=OFF -DENABLE_TESTS=OFF -DENABLE_ANALYTICS=OFF
+          -DENABLE_AUTOUPDATE=OFF
+      - name: Build runtime
+        run: cmake --build build --config Release --target moderngekko-run
+      - name: Build recompiler
+        run: cmake --build build --config Release --target dolrecomp
+      - name: Collect binaries
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path staging | Out-Null
+          Get-ChildItem -Path build -Recurse -Include moderngekko-run.exe,dolrecomp.exe |
+            ForEach-Object { Copy-Item $_.FullName staging/ }
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ringout-windows-binaries
+          path: staging/
+      - name: Publish to release
+        shell: bash
+        run: |
+          7z a -tzip RingOut-windows-binaries.zip ./staging/*
+          gh release view windows-latest >/dev/null 2>&1 || \
+            gh release create windows-latest --prerelease --title "Windows binaries (rolling)"
+          gh release upload windows-latest RingOut-windows-binaries.zip --clobber
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
