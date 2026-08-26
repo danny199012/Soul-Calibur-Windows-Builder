@@ -12,7 +12,7 @@ What this script does:
   3. Builds the ModernGekko runtime  ->  moderngekko-run.exe
   4. Builds the DolRecomp recompiler ->  dolrecomp.exe
   5. Compiles the Windows launcher   ->  RingOut.exe
-  6. Assembles everything under  RingOut-windows\  (or --out DIR).
+  6. Assembles everything under  RingOut-windows  (or --out DIR).
   7. Runs first-time module setup if you supply a disc image with --iso.
 
 Requirements (installed automatically where possible):
@@ -375,13 +375,24 @@ def check_vulkan():
 
 def clone_or_update_repo(repo_dir: Path, tools: ToolSet):
     env = tools.env()
+    # Windows has a 260-character path limit by default. The vendored Dolphin
+    # tree contains deeply-nested SPIRV-Cross shader files whose names exceed
+    # this (e.g. overlapping-bindings.msl31.argument.argument-tier-1...comp).
+    # Without core.longpaths, git clone fails with "Filename too long" on ~6
+    # files, then aborts the checkout with exit 128.
+    run([tools.git, "config", "--global", "core.longpaths", "true"],
+        env=env, quiet=True)
     if (repo_dir / ".git").exists():
         ok(f"Repository already exists at {repo_dir} - pulling latest ...")
         run([tools.git, "-C", str(repo_dir), "pull", "--ff-only"], env=env)
     else:
         info(f"Cloning {REPO_URL} into {repo_dir} ...")
         # No submodules - repo README says everything is vendored as plain files.
-        run([tools.git, "clone", "--depth=1", REPO_URL, str(repo_dir)], env=env)
+        # -c core.longpaths=true is belt-and-braces alongside the global setting
+        # above, in case the user's gitrc overrides it.
+        run([tools.git, "clone", "--depth=1",
+             "-c", "core.longpaths=true",
+             REPO_URL, str(repo_dir)], env=env)
     ok("Repository ready.")
 
 # ---------------------------------------------------------------------------
