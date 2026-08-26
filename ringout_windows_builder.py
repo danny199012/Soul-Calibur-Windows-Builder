@@ -372,38 +372,82 @@ def check_vulkan():
     )
 
 def ensure_msvc(tools: ToolSet, dl_dir: Path, skip: bool):
-    """Detect Visual Studio / MSVC, or download Build Tools.
+    """Detect Visual Studio / MSVC, preferring VS 2022 (version 17).
 
     The Dolphin runtime (moderngekko-run.exe) MUST be built with MSVC on Windows.
     llvm-mingw fails on POSIX functions like wcwidth() that MSVC provides.
-    This matches the original RingOut CI, which used 'Visual Studio 17 2022'.
-    """
-    # 1) Check vswhere.exe (the canonical VS detector)
-    vswhere = Path(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe")
-    if vswhere.exists():
-        result = subprocess.run(
-            [str(vswhere), "-latest", "-products", "*",
-             "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-             "-property", "installationPath", "-property", "catalog_productLineVersion"],
-            capture_output=True, text=True)
-        if result.returncode == 0 and result.stdout.strip():
-            lines = result.stdout.strip().splitlines()
-            vs_path = lines[0].strip()
-            # Detect version: 2022 = VS 17, 2019 = VS 16
-            result_ver = subprocess.run(
-                [str(vswhere), "-latest", "-products", "*",
-                 "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-                 "-property", "installationVersion"],
-                capture_output=True, text=True)
-            ver_str = result_ver.stdout.strip() if result_ver.returncode == 0 else ""
-            major = int(ver_str.split('.')[0]) if ver_str.split('.')[0].isdigit() else 17
-            tools.vs_generator = f"Visual Studio {major} {'2022' if major == 17 else '2019' if major == 16 else ''}".strip()
-            tools.msvc_found = True
-            ok(f"Visual Studio found: {vs_path}")
-            ok(f"Using generator: {tools.vs_generator}")
-            return
 
-    # 2) Check for cl.exe on PATH (Developer Command Prompt)
+    VS 2022 (MSVC 14.3x, ~19.40) is the version the original RingOut CI used
+    (windows-2022 runner). VS 2026 Preview (MSVC 19.51, toolset 14.51) has
+    tighter C++ conformance that breaks the vendored Dolphin code — it rejects
+    implicit std::string_view -> std::string conversions (C2440) that VS 2022
+    silently allowed. So we prefer VS 2022 and only use a newer version as a
+    last resort (with a warning).
+    """
+    vswhere = Path(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe")
+
+    def _vswhere_find(version_range):
+        """Query vswhere for a VS install in the given version range. Returns
+        (install_path, version_major) or (None, None)."""
+        if not vswhere.exists():
+            return None, None
+        r = subprocess.run(
+            [str(vswhere), "-latest", "-products", "*",
+             "-version", version_range,
+             "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+             "-property", "installationPath"],
+            capture_output=True, text=True)
+        if r.returncode != 0 or not r.stdout.strip():
+            return None, None
+        vs_path = r.stdout.strip().splitlines()[0].strip()
+        r2 = subprocess.run(
+            [str(vswhere), "-latest", "-products", "*",
+             "-version", version_range,
+             "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+             "-property", "installationVersion"],
+            capture_output=True, text=True)
+        ver_str = r2.stdout.strip() if r2.returncode == 0 else ""
+        major = int(ver_str.split('.')[0]) if ver_str.split('.')[0].isdigit() else 17
+        return vs_path, major
+
+    def _set_generator(major):
+        if major == 17:
+            tools.vs_generator = "Visual Studio 17 2022"
+        elif major == 16:
+            tools.vs_generator = "Visual Studio 16 2019"
+        else:
+            tools.vs_generator = f"Visual Studio {major}"
+        tools.msvc_found = True
+
+    # 1) Prefer VS 2022 (version 17.x) — the version the original CI used
+    vs_path, major = _vswhere_find("[17.0,18.0)")
+    if vs_path:
+        _set_generator(major)
+        ok(f"Visual Studio 2022 found: {vs_path}")
+        ok(f"Using generator: {tools.vs_generator}")
+        return
+
+    # 2) Check for VS 2019 (version 16.x) as a fallback
+    vs_path, major = _vswhere_find("[16.0,17.0)")
+    if vs_path:
+        _set_generator(major)
+        ok(f"Visual Studio 2019 found: {vs_path}")
+        ok(f"Using generator: {tools.vs_generator}")
+        return
+
+    # 3) Check for any other VS version (e.g. VS 2026 Preview = version 18)
+    vs_path, major = _vswhere_find("[15.0,)")
+    if vs_path:
+        _set_generator(major)
+        warn(f"Only Visual Studio {major} was found (not VS 2022).")
+        warn(f"The vendored Dolphin code may have compilation errors with MSVC")
+        warn(f"versions newer than VS 2022 (C2440 string_view->string).")
+        warn(f"Install VS 2022 Build Tools for a guaranteed-compatible build:")
+        warn(f"  https://visualstudio.microsoft.com/downloads/")
+        ok(f"Using generator: {tools.vs_generator} (best available)")
+        return
+
+    # 4) Check for cl.exe on PATH (Developer Command Prompt)
     cl = which("cl")
     if cl:
         ok(f"MSVC (cl.exe) found on PATH: {cl}")
@@ -412,20 +456,20 @@ def ensure_msvc(tools: ToolSet, dl_dir: Path, skip: bool):
         return
 
     if skip:
-        warn("MSVC not found. The runtime requires Visual Studio Build Tools.\n"
+        warn("MSVC not found. The runtime requires Visual Studio 2022 Build Tools.\n"
              "  Download from: https://visualstudio.microsoft.com/downloads/\n"
-             "  Select 'Build Tools for Visual Studio' and install the\n"
+             "  Select 'Build Tools for Visual Studio 2022' and install the\n"
              "  'Desktop development with C++' workload.")
         return
 
-    # 3) Download and install VS Build Tools
-    warn("MSVC not found - downloading Visual Studio Build Tools ...")
+    # 5) Download and install VS 2022 Build Tools
+    warn("VS 2022 not found - downloading Visual Studio 2022 Build Tools ...")
     warn("This is a large install (~2-3 GB) and may take 10-20 minutes.")
     url = "https://aka.ms/vs/17/release/vs_buildtools.exe"
     dest = dl_dir / "vs_buildtools.exe"
     download(url, dest, label="vs_buildtools.exe")
 
-    info("Installing Visual Studio Build Tools (C++ workload) ...")
+    info("Installing Visual Studio 2022 Build Tools (C++ workload) ...")
     result = subprocess.run(
         [str(dest), "--quiet", "--wait", "--norestart",
          "--add", "Microsoft.VisualStudio.Workload.VCTools",
@@ -436,19 +480,12 @@ def ensure_msvc(tools: ToolSet, dl_dir: Path, skip: bool):
         warn("You may need to install manually from https://visualstudio.microsoft.com/downloads/")
         return
 
-    ok("Visual Studio Build Tools installed.")
+    ok("Visual Studio 2022 Build Tools installed.")
 
-    # Re-detect
-    if vswhere.exists():
-        result = subprocess.run(
-            [str(vswhere), "-latest", "-products", "*",
-             "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-             "-property", "installationVersion"],
-            capture_output=True, text=True)
-        ver_str = result.stdout.strip() if result.returncode == 0 else ""
-        major = int(ver_str.split('.')[0]) if ver_str.split('.')[0].isdigit() else 17
-        tools.vs_generator = f"Visual Studio {major} {'2022' if major == 17 else '2019' if major == 16 else ''}".strip()
-        tools.msvc_found = True
+    # Re-detect VS 2022
+    vs_path, major = _vswhere_find("[17.0,18.0)")
+    if vs_path:
+        _set_generator(major)
         ok(f"Using generator: {tools.vs_generator}")
 
 # ---------------------------------------------------------------------------
