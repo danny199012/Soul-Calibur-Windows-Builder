@@ -588,12 +588,20 @@ def build_moderngekko(repo: Path, build_root: Path, tools: ToolSet,
         "USE_UPNP":              "OFF",
         "ENCODE_FRAMEDUMPS":     "OFF",
         "ENABLE_LLVM":           "OFF",
-        # The vendored Dolphin tree uses C++20 __VA_OPT__ in macros
-        # (HookableEvent.h, ChunkFile.h, etc.) which MSVC's legacy
-        # preprocessor cannot handle. /Zc:preprocessor enables the
-        # conforming preprocessor that supports __VA_OPT__.
-        # Without this, the build dies with C3878 syntax errors.
-        "CMAKE_CXX_FLAGS":       "/Zc:preprocessor",
+        # The vendored Dolphin tree has two MSVC compatibility issues:
+        #
+        # 1. C++20 __VA_OPT__ in macros (HookableEvent.h, ChunkFile.h, etc.)
+        #    requires the conforming preprocessor: /Zc:preprocessor
+        #
+        # 2. Implicit std::string_view -> std::string conversions
+        #    (StringUtil.h lines 259, 264) which newer MSVC (19.44+)
+        #    rejects under strict conformance (/permissive-).
+        #    Adding /permissive (without minus) relaxes this so the
+        #    conversion is allowed, as it was with older MSVC.
+        #
+        # Both flags are needed: /Zc:preprocessor for __VA_OPT__, and
+        # /permissive for the string_view->string conversion.
+        "CMAKE_CXX_FLAGS":       "/Zc:preprocessor /permissive",
         "CMAKE_C_FLAGS":         "/Zc:preprocessor",
         "CMAKE_CXX_STANDARD":    "20",
     }
