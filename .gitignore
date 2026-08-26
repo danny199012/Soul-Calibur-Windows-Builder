@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+logs/
+_ringout_build/
+RingOut-windows/

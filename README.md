@@ -1,8 +1,39 @@
 # Soul-Calibur-Windows-Builder
 
-A single-file Python tool that builds a working Windows version of the
+A Python tool that builds a working Windows version of the
 [SoulCalibur II static recompilation (RingOut)](https://github.com/jackpoison-prog/RingOut)
 — and produces a runnable `.exe`.
+
+Two ways to run it:
+
+- **GUI** — `ringout_windows_gui.py` — a graphical interface with file
+  pickers, options, and a live log panel. **Recommended for most users.**
+- **CLI** — `ringout_windows_builder.py` — the command-line builder the GUI
+  drives under the hood.
+
+## Quick start (GUI)
+
+```bat
+python ringout_windows_gui.py
+```
+
+1. Click **Browse...** next to *Disc Image* and pick your `.iso`.
+2. (Optional) pick an output folder, or leave it for the default.
+3. Click **Start Build**.
+4. Watch the log — it stays visible and is also saved to
+   `logs/build_TIMESTAMP.log` (plus `logs/latest.log`).
+
+If the build fails, a dialog shows the log file path so you never lose
+the error message.
+
+## Quick start (CLI)
+
+```bat
+python ringout_windows_builder.py --iso "C:\games\SoulCalibur2.iso"
+
+:: With logging to a file:
+python ringout_windows_builder.py --iso "C:\games\SoulCalibur2.iso" --log build.log
+```
 
 ## What it does
 
@@ -52,6 +83,18 @@ python ringout_windows_builder.py --skip-deps --iso game.iso
 | `--rebuild` | Delete cached build directories and rebuild from scratch |
 | `--no-launcher` | Skip building the native `RingOut.exe` launcher |
 | `--jobs N` | Parallel compile jobs (default: CPU count) |
+| `--log FILE` | Also write all output to a log file (plain text, no colour codes) |
+
+### GUI options
+
+The GUI (`ringout_windows_gui.py`) provides the same options as checkboxes
+and fields. It automatically:
+
+- Saves every build to `logs/build_YYYY-MM-DD_HH-MM-SS.log`
+- Maintains `logs/latest.log` as a copy of the most recent build
+- Passes `--log` to the builder as a second safety net
+- Shows a colour-coded, scrollable log panel that never closes
+- Displays a dialog with the log file path on success or failure
 
 ## In-game controls
 

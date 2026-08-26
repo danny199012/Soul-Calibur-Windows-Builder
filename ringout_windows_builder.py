@@ -49,6 +49,9 @@ REPO_DIR_NAME = "RingOut-src"
 LLVM_MINGW_RELEASE_API   = "https://api.github.com/repos/mstorsjo/llvm-mingw/releases/latest"
 LLVM_MINGW_ASSET_PATTERN = re.compile(r"llvm-mingw-\d+-ucrt-x86_64\.zip", re.IGNORECASE)
 
+# Regex to strip ANSI colour codes from log file output
+ANSI_RE = re.compile(r'\033\[[0-9;]*m')
+
 # CMake portable zip (fallback if cmake not on PATH)
 CMAKE_DOWNLOAD_URL = (
     "https://github.com/Kitware/CMake/releases/download/"
@@ -747,7 +750,38 @@ def parse_args():
                    help="Skip building the native RingOut.exe launcher")
     p.add_argument("--jobs", type=int, default=os.cpu_count() or 4,
                    metavar="N", help="Parallel compile jobs")
+    p.add_argument("--log",  metavar="FILE", default=None,
+                   help="Also write all output to this log file (plain text, no ANSI codes)")
     return p.parse_args()
+
+def _install_log_tee(log_path):
+    """Redirect stdout + stderr through a Tee that also writes to a log file."""
+    class _Tee:
+        def __init__(self, *streams):
+            self.streams = streams
+        def write(self, text):
+            for s in self.streams:
+                s.write(text)
+        def flush(self):
+            for s in self.streams:
+                try:
+                    s.flush()
+                except Exception:
+                    pass
+    log_dir = Path(log_path).parent
+    log_dir.mkdir(parents=True, exist_ok=True)
+    lf = open(log_path, 'w', encoding='utf-8')
+    # Strip ANSI colour codes before writing to the log file
+    class _StripAnsi:
+        def __init__(self, fh):
+            self.fh = fh
+        def write(self, text):
+            self.fh.write(ANSI_RE.sub('', text))
+        def flush(self):
+            self.fh.flush()
+    stripped = _StripAnsi(lf)
+    sys.stdout = _Tee(sys.stdout, stripped)
+    sys.stderr = _Tee(sys.stderr, stripped)
 
 def main():
     args = parse_args()
@@ -755,6 +789,10 @@ def main():
     if sys.platform != "win32":
         die("This script targets Windows only.\n"
             "On Linux/Mac use  ./setup.sh  from the dist/ directory instead.")
+
+    # Optional log file (also used by the GUI)
+    if args.log:
+        _install_log_tee(args.log)
 
     log(r"""
   ____  _             ___        _
