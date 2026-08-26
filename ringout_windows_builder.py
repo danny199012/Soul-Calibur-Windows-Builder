@@ -553,6 +553,14 @@ def build_moderngekko(repo: Path, build_root: Path, tools: ToolSet,
         "USE_UPNP":              "OFF",
         "ENCODE_FRAMEDUMPS":     "OFF",
         "ENABLE_LLVM":           "OFF",
+        # The vendored Dolphin tree uses C++20 __VA_OPT__ in macros
+        # (HookableEvent.h, ChunkFile.h, etc.) which MSVC's legacy
+        # preprocessor cannot handle. /Zc:preprocessor enables the
+        # conforming preprocessor that supports __VA_OPT__.
+        # Without this, the build dies with C3878 syntax errors.
+        "CMAKE_CXX_FLAGS":       "/Zc:preprocessor",
+        "CMAKE_C_FLAGS":         "/Zc:preprocessor",
+        "CMAKE_CXX_STANDARD":    "20",
     }
 
     if tools.msvc_found and tools.vs_generator:
