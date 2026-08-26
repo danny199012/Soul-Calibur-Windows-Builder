@@ -26,6 +26,18 @@ python ringout_windows_gui.py
 If the build fails, a dialog shows the log file path so you never lose
 the error message.
 
+## Requirements
+
+- **Windows 10 / 11**, x86-64
+- **Python 3.8+** with Tkinter (for the GUI; included in the standard installer)
+- **Visual Studio 2022 Build Tools** (C++ workload) — auto-detected if installed;
+  auto-downloaded if missing (~2-3 GB). The Dolphin runtime **requires MSVC** —
+  it cannot be built with MinGW/clang due to POSIX function dependencies.
+- **Git, CMake, Ninja** — auto-downloaded if not on PATH
+- **Vulkan-capable GPU** with up-to-date drivers (for running the game)
+- **~8 GB free disk space** (tools + source + build output)
+- A GameCube disc image of SoulCalibur II that **you already own**
+
 ## Quick start (CLI)
 
 ```bat

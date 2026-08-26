@@ -214,6 +214,8 @@ class ToolSet:
         self.clangxx = None
         self.git     = None
         self.python  = None
+        self.msvc_found    = False
+        self.vs_generator  = None  # e.g. "Visual Studio 17 2022"
 
     def env(self, extra_path_dirs=None):
         """Build an os.environ copy that has all known tools on PATH."""
@@ -369,6 +371,86 @@ def check_vulkan():
         "  Optional SDK for development: https://vulkan.lunarg.com/sdk/home#windows"
     )
 
+def ensure_msvc(tools: ToolSet, dl_dir: Path, skip: bool):
+    """Detect Visual Studio / MSVC, or download Build Tools.
+
+    The Dolphin runtime (moderngekko-run.exe) MUST be built with MSVC on Windows.
+    llvm-mingw fails on POSIX functions like wcwidth() that MSVC provides.
+    This matches the original RingOut CI, which used 'Visual Studio 17 2022'.
+    """
+    # 1) Check vswhere.exe (the canonical VS detector)
+    vswhere = Path(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe")
+    if vswhere.exists():
+        result = subprocess.run(
+            [str(vswhere), "-latest", "-products", "*",
+             "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+             "-property", "installationPath", "-property", "catalog_productLineVersion"],
+            capture_output=True, text=True)
+        if result.returncode == 0 and result.stdout.strip():
+            lines = result.stdout.strip().splitlines()
+            vs_path = lines[0].strip()
+            # Detect version: 2022 = VS 17, 2019 = VS 16
+            result_ver = subprocess.run(
+                [str(vswhere), "-latest", "-products", "*",
+                 "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+                 "-property", "installationVersion"],
+                capture_output=True, text=True)
+            ver_str = result_ver.stdout.strip() if result_ver.returncode == 0 else ""
+            major = int(ver_str.split('.')[0]) if ver_str.split('.')[0].isdigit() else 17
+            tools.vs_generator = f"Visual Studio {major} {'2022' if major == 17 else '2019' if major == 16 else ''}".strip()
+            tools.msvc_found = True
+            ok(f"Visual Studio found: {vs_path}")
+            ok(f"Using generator: {tools.vs_generator}")
+            return
+
+    # 2) Check for cl.exe on PATH (Developer Command Prompt)
+    cl = which("cl")
+    if cl:
+        ok(f"MSVC (cl.exe) found on PATH: {cl}")
+        tools.msvc_found = True
+        tools.vs_generator = "Visual Studio 17 2022"
+        return
+
+    if skip:
+        warn("MSVC not found. The runtime requires Visual Studio Build Tools.\n"
+             "  Download from: https://visualstudio.microsoft.com/downloads/\n"
+             "  Select 'Build Tools for Visual Studio' and install the\n"
+             "  'Desktop development with C++' workload.")
+        return
+
+    # 3) Download and install VS Build Tools
+    warn("MSVC not found - downloading Visual Studio Build Tools ...")
+    warn("This is a large install (~2-3 GB) and may take 10-20 minutes.")
+    url = "https://aka.ms/vs/17/release/vs_buildtools.exe"
+    dest = dl_dir / "vs_buildtools.exe"
+    download(url, dest, label="vs_buildtools.exe")
+
+    info("Installing Visual Studio Build Tools (C++ workload) ...")
+    result = subprocess.run(
+        [str(dest), "--quiet", "--wait", "--norestart",
+         "--add", "Microsoft.VisualStudio.Workload.VCTools",
+         "--includeRecommended"],
+        timeout=2400)  # up to 40 minutes
+    if result.returncode != 0:
+        warn(f"VS Build Tools installer returned code {result.returncode}")
+        warn("You may need to install manually from https://visualstudio.microsoft.com/downloads/")
+        return
+
+    ok("Visual Studio Build Tools installed.")
+
+    # Re-detect
+    if vswhere.exists():
+        result = subprocess.run(
+            [str(vswhere), "-latest", "-products", "*",
+             "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+             "-property", "installationVersion"],
+            capture_output=True, text=True)
+        ver_str = result.stdout.strip() if result.returncode == 0 else ""
+        major = int(ver_str.split('.')[0]) if ver_str.split('.')[0].isdigit() else 17
+        tools.vs_generator = f"Visual Studio {major} {'2022' if major == 17 else '2019' if major == 16 else ''}".strip()
+        tools.msvc_found = True
+        ok(f"Using generator: {tools.vs_generator}")
+
 # ---------------------------------------------------------------------------
 # Repository
 # ---------------------------------------------------------------------------
@@ -401,6 +483,7 @@ def clone_or_update_repo(repo_dir: Path, tools: ToolSet):
 
 def cmake_configure(src: Path, build: Path, generator, extra_defs: dict,
                     tools: ToolSet, rebuild: bool):
+    """Configure with Ninja + clang (for DolRecomp, launcher, module)."""
     if rebuild:
         rmtree(build)
     ensure_dir(build)
@@ -414,6 +497,28 @@ def cmake_configure(src: Path, build: Path, generator, extra_defs: dict,
         f"-DCMAKE_C_COMPILER={tools.clang}",
         f"-DCMAKE_CXX_COMPILER={tools.clangxx}",
         "-DCMAKE_BUILD_TYPE=Release",
+    ]
+    for k, v in extra_defs.items():
+        cmd.append(f"-D{k}={v}")
+    run(cmd, env=env)
+
+def cmake_configure_msvc(src: Path, build: Path, vs_generator: str,
+                          extra_defs: dict, tools: ToolSet, rebuild: bool):
+    """Configure with Visual Studio generator + MSVC (for the Dolphin runtime).
+
+    The VS generator finds MSVC automatically — do NOT pass CMAKE_C_COMPILER
+    or CMAKE_MAKE_PROGRAM. -A x64 selects 64-bit.
+    """
+    if rebuild:
+        rmtree(build)
+    ensure_dir(build)
+    env = tools.env()
+    cmd = [
+        tools.cmake,
+        "-S", str(src),
+        "-B", str(build),
+        "-G", vs_generator,
+        "-A", "x64",
     ]
     for k, v in extra_defs.items():
         cmd.append(f"-D{k}={v}")
@@ -450,7 +555,14 @@ def build_moderngekko(repo: Path, build_root: Path, tools: ToolSet,
         "ENABLE_LLVM":           "OFF",
     }
 
-    cmake_configure(src, build, "Ninja", defs, tools, rebuild)
+    if tools.msvc_found and tools.vs_generator:
+        info("Using MSVC (Visual Studio generator) for the Dolphin runtime")
+        cmake_configure_msvc(src, build, tools.vs_generator, defs, tools, rebuild)
+    else:
+        die("MSVC is required to build the Dolphin runtime on Windows.\n"
+            "llvm-mingw cannot build it (wcwidth and other POSIX functions\n"
+            "are missing). Install Visual Studio Build Tools and re-run.\n"
+            "  https://visualstudio.microsoft.com/downloads/")
     cmake_build(build, "moderngekko-run", tools, jobs)
 
     # Locate the produced binary
@@ -482,7 +594,13 @@ def build_dolrecomp(repo: Path, build_root: Path, tools: ToolSet,
     build = build_root / "dolrecomp-build"
 
     defs = {"DOLRECOMP_ENABLE_LLVM": "OFF"}
-    cmake_configure(src, build, "Ninja", defs, tools, rebuild)
+    if tools.msvc_found and tools.vs_generator:
+        info("Using MSVC (Visual Studio generator) for DolRecomp")
+        cmake_configure_msvc(src, build, tools.vs_generator, defs, tools, rebuild)
+    else:
+        # DolRecomp is pure C and CAN build with clang — but use MSVC if
+        # available for consistency with the runtime.
+        cmake_configure(src, build, "Ninja", defs, tools, rebuild)
     cmake_build(build, "dolrecomp", tools, jobs)
 
     exe = None
@@ -840,6 +958,7 @@ def main():
     ensure_llvm_mingw(tools, dl_dir, args.skip_deps)
     ensure_python(tools,     dl_dir)
     check_vulkan()
+    ensure_msvc(tools,        dl_dir, args.skip_deps)
 
     # --- source ---
     step("Fetching RingOut source")
