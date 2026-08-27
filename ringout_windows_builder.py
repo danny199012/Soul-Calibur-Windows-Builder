@@ -601,7 +601,7 @@ def build_moderngekko(repo: Path, build_root: Path, tools: ToolSet,
         #
         # Both flags are needed: /Zc:preprocessor for __VA_OPT__, and
         # /permissive for the string_view->string conversion.
-        "CMAKE_CXX_FLAGS":       "/Zc:preprocessor /permissive /wd4804 /wd4805",
+        "CMAKE_CXX_FLAGS":       "/Zc:preprocessor /wd4067 /wd4804 /wd4805",
         "CMAKE_C_FLAGS":         "/Zc:preprocessor",
         "CMAKE_CXX_STANDARD":    "20",
     }
